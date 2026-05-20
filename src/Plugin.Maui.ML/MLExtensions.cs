@@ -99,13 +99,7 @@ public static class MLExtensions
     private static IMLInfer CreateMlKitOrThrow()
     {
 #if ANDROID
-        // The stub in the core package always throws — the real implementation is in Plugin.Maui.ML.TFLite.
-        // This overload is kept so MLBackend.MLKit remains a valid enum value that compiles, but
-        // consumers must add Plugin.Maui.ML.TFLite and call AddMauiMLKit() to get a working backend.
-        throw new NotSupportedException(
-            "The MLKit/TFLite backend requires the 'Plugin.Maui.ML.TFLite' NuGet package. " +
-            "Add that package to your Android app project and use 'AddMauiMLKit()' instead of " +
-            "'AddMauiML(MLBackend.MLKit)'.");
+        return new Platforms.Android.MLKitInfer();
 #else
         throw new PlatformNotSupportedException("ML Kit backend is only available on Android.");
 #endif

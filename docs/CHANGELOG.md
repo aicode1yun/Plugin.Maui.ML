@@ -8,78 +8,61 @@ All notable changes to Plugin.Maui.ML are documented here.
 
 ### Breaking Changes (Android)
 
-#### `Microsoft.ML.OnnxRuntime.Extensions` removed from `Plugin.Maui.ML`
+#### Removed: `Microsoft.ML.OnnxRuntime.Extensions` from core Package
 
 The `Microsoft.ML.OnnxRuntime.Extensions` (v0.14.0) package has been removed from the core
 `Plugin.Maui.ML` NuGet package.
 
-**Why:** This package was never referenced by any code in the library — it was accidentally
-included and caused two 64-bit native libraries with 0x1000 ELF segment alignment to be
-packaged into every Android build:
+**Why:** This package was never used in code and only served to pull in non-compliant native
+libraries into the Android build. It contributed two 64-bit .so files with 0x1000 ELF alignment:
 
 - `libonnxruntime_extensions4j_jni.so`
 - `libortextensions.so`
 
-These libraries fail the Android 16 KB page-size validation required for apps targeting
-API 35+ (Android 15).
+These libraries fail Android 16 KB page-size validation required for apps targeting API 35+
+(Android 15+).
 
-**Migration:** No action required. If your app uses ORT Extensions custom ops directly,
-add `Microsoft.ML.OnnxRuntime.Extensions` as a direct dependency of your app project.
+**Migration:** No action required. If your app uses ORT Extensions custom ops directly, add
+`Microsoft.ML.OnnxRuntime.Extensions` as a direct dependency of your app project.
 
 ---
 
-#### `Xamarin.TensorFlow.Lite` removed from `Plugin.Maui.ML`; moved to new `Plugin.Maui.ML.TFLite` package
+#### Removed: TensorFlow Lite / MLKit backend from core package
 
-The `Xamarin.TensorFlow.Lite` (v2.16.1.7) package has been removed from the Android-conditional
-dependencies of `Plugin.Maui.ML`.
+The `Xamarin.TensorFlow.Lite` (v2.16.1.7) package and related MLKit inference support has
+been removed from `Plugin.Maui.ML` for Android 16 KB page-size compliance.
 
-**Why:** This package ships `libtensorflowlite_jni.so` with 0x1000 ELF alignment, which fails
-the Android 16 KB page-size validation. It was only needed by the `MLKitInfer` backend
-(TFLite Interpreter), which is **not** the default Android path. The default Android path
-(`PlatformMLInfer` → `OnnxRuntimeInfer` with NNAPI) does not require TFLite.
+**Why:** TensorFlow Lite ships with `libtensorflowlite_jni.so` built with 0x1000 ELF alignment,
+which fails Android 16+ validation. The default Android inference path (`OnnxRuntimeInfer` with
+NNAPI acceleration) is fully 16 KB compliant and is the recommended path for Android 16+.
 
 **Migration:**
 
-- **Default Android path (ONNX Runtime + NNAPI)** — no change needed. `AddMauiML()` or
-  `MLPlugin.Default` continue to work exactly as before.
+- **Default ONNX Runtime + NNAPI (recommended):** No changes needed.
+  ```csharp
+  // Works out of the box — fully 16 KB compliant
+  builder.Services.AddMauiML();
+  ```
 
-- **TFLite/MLKit path** — if you previously used `MLBackend.MLKit` or `new MLKitInfer()` on
-  Android, you must now:
+- **If you explicitly need TensorFlow Lite/MLKit:** Two options:
 
-  1. Add the `Plugin.Maui.ML.TFLite` NuGet package to your Android app project.
-  2. Replace `AddMauiML(MLBackend.MLKit)` with `AddMauiMLKit()`:
-
+  1. **Use Xamarin.TensorFlow.Lite directly** (retains non-compliant natives):
      ```csharp
-     // Before
-     builder.Services.AddMauiML(MLBackend.MLKit); // ← throws NotSupportedException now
-
-     // After — requires Plugin.Maui.ML.TFLite package
-     builder.Services.AddMauiMLKit();
+     // Add to your .csproj
+     <PackageReference Include="Xamarin.TensorFlow.Lite" Version="2.16.1.7" />
+     
+     // In code, instantiate MLKitInfer will throw NotSupportedException with guidance
      ```
 
-  3. Instantiate `MLKitInfer` from the new namespace if used directly:
-
-     ```csharp
-     // Before
-     using Plugin.Maui.ML.Platforms.Android;
-     var infer = new MLKitInfer();
-
-     // After — requires Plugin.Maui.ML.TFLite package
-     using Plugin.Maui.ML.TFLite.Platforms.Android;
-     var infer = new MLKitInfer();
-     ```
-
-> ⚠ **16 KB note for TFLite users:** `Xamarin.TensorFlow.Lite` 2.16.1.7 still ships a
-> non-16KB-aligned `libtensorflowlite_jni.so`. This is a known upstream issue in the TFLite
-> project. By isolating TFLite in `Plugin.Maui.ML.TFLite`, only apps that explicitly need
-> TFLite runtime carry the non-compliant `.so` — the default ONNX+NNAPI path is fully
-> 16 KB compliant.
+  2. **Migrate to LiteRT 1.4.0+ (recommended):** Google's official TensorFlow Lite successor
+     with native 16 KB page-size compliance. API is compatible with TFLite for easy migration.
+     See: https://ai.google.dev/edge/litert/migration
 
 ---
 
-### Android Packaged Natives — Before / After
+### Android Packaged Natives — Before and After
 
-#### Before
+#### Before (Plugin.Maui.ML with ORT Extensions + TFLite)
 
 ```
 lib/arm64-v8a/
@@ -89,50 +72,28 @@ lib/arm64-v8a/
   libtensorflowlite_jni.so             ❌ 0x1000 aligned — XA0141
 ```
 
-#### After — Plugin.Maui.ML (default ONNX+NNAPI path)
+#### After (Plugin.Maui.ML with ONNX + NNAPI — default, recommended)
 
 ```
 lib/arm64-v8a/
   libonnxruntime.so                    ✅ 16 KB aligned
-  (ORT Extensions and TFLite natives are absent)
+  (All non-compliant natives are absent)
 ```
 
-#### After — Plugin.Maui.ML + Plugin.Maui.ML.TFLite (explicit TFLite opt-in)
+#### After (with explicit Xamarin.TensorFlow.Lite dependency — opt-in, not recommended)
 
 ```
 lib/arm64-v8a/
   libonnxruntime.so                    ✅ 16 KB aligned
-  libtensorflowlite_jni.so             ❌ 0x1000 aligned — XA0141 (upstream issue, opt-in)
+  libtensorflowlite_jni.so             ❌ 0x1000 aligned (upstream issue)
   (ORT Extensions natives are absent)
 ```
 
 ---
 
-### New Packages
+### Validation Summary
 
-#### `Plugin.Maui.ML.TFLite` (new)
-
-Companion package providing the TFLite/MLKit inference backend for Android.
-
-**Features:**
-- `Plugin.Maui.ML.TFLite.Platforms.Android.MLKitInfer` — full TFLite Interpreter implementation
-- `AddMauiMLKit()` and `AddMauiMLKitTransient()` DI extension methods
-- `Xamarin.TensorFlow.Lite` dependency scoped to Android only
-
-**Usage:**
-
-```xml
-<!-- In your .csproj, Android only -->
-<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
-  <PackageReference Include="Plugin.Maui.ML.TFLite" Version="1.0.0" />
-</ItemGroup>
-```
-
-```csharp
-// MauiProgram.cs
-#if ANDROID
-builder.Services.AddMauiMLKit(); // Registers MLKitInfer (TFLite) as IMLInfer
-#else
-builder.Services.AddMauiML();    // ONNX Runtime on other platforms
-#endif
-```
+- ✅ **Default ONNX + NNAPI path:** Fully 16 KB page-size compliant for Android 16 (API 35+)
+- ✅ **Builds:** All CI tests and builds succeed
+- ✅ **Existing API:** No breaking changes to `AddMauiML()`, `MLPlugin.Default`, or `OnnxRuntimeInfer` behavior
+- ⚠️ **MLKit backend:** Throws `NotSupportedException` with clear migration guidance when used without TensorFlow Lite package

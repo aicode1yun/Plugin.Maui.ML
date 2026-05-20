@@ -10,7 +10,6 @@
   <Project Path="samples/MauiSample/MauiSample.csproj">
     <Deploy />
   </Project>
-  <Project Path="src/Plugin.Maui.ML.TFLite/Plugin.Maui.ML.TFLite.csproj" />
   <Project Path="src/Plugin.Maui.ML/Plugin.Maui.ML.csproj" />
   <Project Path="tests/Plugin.Maui.ML.Tests/Plugin.Maui.ML.Tests.csproj" />
   <Project Path="tools/HFOnnxTool/HFOnnxTool.csproj" />

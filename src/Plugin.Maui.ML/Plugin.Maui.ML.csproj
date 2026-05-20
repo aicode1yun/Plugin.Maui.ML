@@ -162,12 +162,7 @@
 	</ItemGroup>
 
 	<!-- Platform-specific packages -->
-	<!-- Xamarin.TensorFlow.Lite is intentionally NOT referenced here.
-	     It ships libtensorflowlite_jni.so with 0x1000 ELF alignment which fails the
-	     Android 16 KB page-size validation on API 35+. TFLite/MLKit inference is
-	     provided by the optional Plugin.Maui.ML.TFLite companion package. -->
-	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
-	</ItemGroup>
+	<!-- Android packages go here as needed -->
 
 	<ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' OR $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">
 		<!-- iOS/macOS-specific packages for CoreML are part of the framework -->
