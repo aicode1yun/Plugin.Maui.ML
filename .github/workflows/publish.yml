@@ -10,6 +10,7 @@ on:
       - main
     paths:
       - 'src/Plugin.Maui.ML/**'
+      - 'src/Plugin.Maui.ML.TFLite/**'
       - 'tests/Plugin.Maui.ML.Tests/**'
       - '.github/workflows/publish.yml'
 
@@ -19,6 +20,7 @@ on:
       - '*'     # any base branch; you can narrow this to 'main' if you like
     paths:
       - 'src/Plugin.Maui.ML/**'
+      - 'src/Plugin.Maui.ML.TFLite/**'
       - 'tests/Plugin.Maui.ML.Tests/**'
       - '.github/workflows/publish.yml'
 
@@ -83,8 +85,14 @@ jobs:
       - name: Build
         run: dotnet build src/Plugin.Maui.ML/Plugin.Maui.ML.csproj --configuration Release -p:Version=${{ env.PACKAGE_VERSION }}
 
+      - name: Build TFLite
+        run: dotnet build src/Plugin.Maui.ML.TFLite/Plugin.Maui.ML.TFLite.csproj --configuration Release -p:Version=${{ env.PACKAGE_VERSION }}
+
       - name: Pack
         run: dotnet pack src/Plugin.Maui.ML/Plugin.Maui.ML.csproj --configuration Release --output ${{ env.NuGetDirectory }} --no-build -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -p:Version=${{ env.PACKAGE_VERSION }}
+
+      - name: Pack TFLite
+        run: dotnet pack src/Plugin.Maui.ML.TFLite/Plugin.Maui.ML.TFLite.csproj --configuration Release --output ${{ env.NuGetDirectory }} --no-build -p:IncludeSymbols=true -p:SymbolPackageFormat=snupkg -p:Version=${{ env.PACKAGE_VERSION }}
       
       - name: Prepare Artifacts
         run: |

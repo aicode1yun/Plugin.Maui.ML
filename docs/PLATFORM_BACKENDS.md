@@ -17,10 +17,14 @@ Plugin.Maui.ML now supports multiple ML inference backends, allowing you to choo
 - **Best for**: Native CoreML models (.mlmodel, .mlmodelc)
 - **Hardware Acceleration**: Apple Neural Engine (A12+, M1+)
 
-### 3. ML Kit / TensorFlow Lite (Android) - Coming Soon
+### 3. ML Kit / TensorFlow Lite (Android) — `Plugin.Maui.ML.TFLite`
 - **Platforms**: Android 8.1+ (API 27+)
-- **Best for**: TensorFlow Lite models
+- **Best for**: TensorFlow Lite models (`.tflite`)
 - **Hardware Acceleration**: NNAPI, GPU delegates
+- **Package**: `Plugin.Maui.ML.TFLite` (separate opt-in NuGet — see note below)
+- **⚠ 16 KB page-size**: `libtensorflowlite_jni.so` shipped by `Xamarin.TensorFlow.Lite` 2.16.1.7
+  has 0x1000 alignment and does not yet pass Android 16 KB validation. Only add this package when
+  you explicitly need TFLite inference.
 
 ### 4. Windows ML (Windows) - Coming Soon
 - **Platforms**: Windows 10 1809+, Windows 11
@@ -60,6 +64,11 @@ builder.Services.AddMauiML(MLBackend.OnnxRuntime);
 // Use pure CoreML on iOS/macOS (requires .mlmodel files)
 #if IOS || MACCATALYST
 builder.Services.AddMauiML(MLBackend.CoreML);
+#endif
+
+// Use TFLite on Android — requires the Plugin.Maui.ML.TFLite package
+#if ANDROID
+builder.Services.AddMauiMLKit();
 #endif
 ```
 
@@ -190,7 +199,7 @@ if (_mlService.Backend == MLBackend.CoreML)
 - You need absolute maximum performance on Apple Silicon
 - You want lowest memory usage on iPhone
 
-**Use ML Kit when (coming soon):**
+**Use ML Kit / TFLite when (requires `Plugin.Maui.ML.TFLite` package):**
 - You're Android only
 - You have existing TFLite models
 - You need Google ML Kit's high-level APIs

@@ -1,183 +1,73 @@
 #if ANDROID
-using Java.Nio;
-using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Xamarin.TensorFlow.Lite;
-using Application = Android.App.Application;
-using Object = Java.Lang.Object;
 
 namespace Plugin.Maui.ML.Platforms.Android;
 
+/// <summary>
+///     Stub implementation of the TFLite/MLKit inference backend.
+///     The real implementation lives in the <c>Plugin.Maui.ML.TFLite</c> NuGet package.
+/// </summary>
+/// <remarks>
+///     This stub exists so that code which references <see cref="MLKitInfer"/> (or
+///     <see cref="MLBackend.MLKit"/>) compiles against the core package and produces
+///     a clear, actionable error at runtime instead of a missing-type build error.
+///
+///     To use TFLite inference on Android:
+///     <list type="number">
+///       <item>Add the <c>Plugin.Maui.ML.TFLite</c> NuGet package to your app project.</item>
+///       <item>Replace <c>AddMauiML(MLBackend.MLKit)</c> with <c>AddMauiMLKit()</c> in your
+///         <c>MauiProgram.cs</c>.</item>
+///     </list>
+/// </remarks>
 public sealed class MLKitInfer : IMLInfer, IDisposable
 {
-    private readonly Lock _sync = new();
-    private bool _disposed;
-    private Interpreter? _interpreter;
-    private byte[]? _modelBytes;
+    private const string Guidance =
+        "The MLKit/TFLite backend is provided by the 'Plugin.Maui.ML.TFLite' NuGet package. " +
+        "Add that package to your app project and use 'AddMauiMLKit()' instead of " +
+        "'AddMauiML(MLBackend.MLKit)'.";
 
-    public void Dispose()
-    {
-        if (_disposed) return;
-        UnloadModel();
-        _disposed = true;
-        GC.SuppressFinalize(this);
-    }
-
+    /// <inheritdoc/>
     public MLBackend Backend => MLBackend.MLKit;
-    public bool IsModelLoaded => _interpreter != null;
 
-    public async Task LoadModelAsync(string modelPath, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(modelPath))
-            throw new ArgumentException("Model path cannot be null or empty", nameof(modelPath));
-        if (!File.Exists(modelPath))
-            throw new FileNotFoundException($"Model file not found: {modelPath}");
-        var bytes = await File.ReadAllBytesAsync(modelPath, cancellationToken).ConfigureAwait(false);
-        Initialize(bytes);
-    }
+    /// <inheritdoc/>
+    public bool IsModelLoaded => false;
 
-    public async Task LoadModelAsync(Stream modelStream, CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(modelStream);
-        await using var ms = new MemoryStream();
-        await modelStream.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
-        Initialize(ms.ToArray());
-    }
+    /// <inheritdoc/>
+    public void Dispose() { /* nothing to dispose */ }
 
-    public async Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(assetName))
-            throw new ArgumentException("Asset name cannot be null or empty", nameof(assetName));
-        try
-        {
-            await using var assetStream = Application.Context.Assets?.Open(assetName)
-                                          ?? throw new FileNotFoundException(
-                                              $"Asset '{assetName}' not found in Android assets.");
-            await LoadModelAsync(assetStream, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Failed to load TFLite model asset '{assetName}': {ex.Message}", ex);
-        }
-    }
+    /// <inheritdoc/>
+    public Task LoadModelAsync(string modelPath, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(Guidance);
 
-    public Task<Dictionary<string, Tensor<float>>> RunInferenceAsync(Dictionary<string, Tensor<float>> inputs,
-        CancellationToken cancellationToken = default)
-    {
-        if (!IsModelLoaded) throw new InvalidOperationException("No TFLite model loaded. Call LoadModelAsync first.");
-        if (inputs == null || inputs.Count == 0)
-            throw new ArgumentException("Inputs cannot be null or empty", nameof(inputs));
+    /// <inheritdoc/>
+    public Task LoadModelAsync(Stream modelStream, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(Guidance);
 
-        return Task.Run(() =>
-        {
-            lock (_sync)
-            {
-                if (_interpreter == null) throw new InvalidOperationException("Interpreter disposed.");
+    /// <inheritdoc/>
+    public Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(Guidance);
 
-                var first = inputs.First();
-                var inputTensor = first.Value;
-                var inputIndex = 0; // assume single input
+    /// <inheritdoc/>
+    public Task<Dictionary<string, Tensor<float>>> RunInferenceAsync(
+        Dictionary<string, Tensor<float>> inputs,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(Guidance);
 
-                // Prepare input buffer
-                var flat = inputTensor.ToArray();
-                var inputShape = inputTensor.Dimensions.ToArray();
-                try
-                {
-                    _interpreter.ResizeInput(inputIndex, inputShape);
-                }
-                catch
-                {
-                    /* ignore if immutable */
-                }
+    /// <inheritdoc/>
+    public Task<Dictionary<string, Tensor<float>>> RunInferenceLongInputsAsync(
+        Dictionary<string, Tensor<long>> inputs,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(Guidance);
 
-                _interpreter.AllocateTensors();
+    /// <inheritdoc/>
+    public Dictionary<string, MLNodeMetadata> GetInputMetadata() =>
+        throw new NotSupportedException(Guidance);
 
-                // Build multidimensional Java array (fallback approach) or supply direct buffer
-                // Simpler: use float[] and rely on internal mapping if shape is 1-D. For N-D we flatten.
-                var inputData = Object.FromArray(flat);
+    /// <inheritdoc/>
+    public Dictionary<string, MLNodeMetadata> GetOutputMetadata() =>
+        throw new NotSupportedException(Guidance);
 
-                // Prepare output container (float[])
-                // Query output shape via tensor
-                var outputTensor = _interpreter.GetOutputTensor(0);
-                if (outputTensor != null)
-                {
-                    var oshape = outputTensor.Shape();
-                    var outCount = 1;
-                    if (oshape != null)
-                    {
-                        foreach (var d in oshape) outCount *= d;
-                        var outputArray = new float[outCount];
-
-                        // Run
-                        _interpreter.Run(inputData, outputArray);
-
-                        // Wrap into DenseTensor
-                        var dense = new DenseTensor<float>(oshape.Select(i => i).ToArray());
-                        var span = dense.Buffer.Span;
-                        for (var i = 0; i < outputArray.Length; i++) span[i] = outputArray[i];
-
-                        return new Dictionary<string, Tensor<float>> { ["output0"] = dense };
-                    }
-                }
-            }
-
-            throw new InvalidOperationException("Failed to run inference or retrieve output.");
-        }, cancellationToken);
-    }
-
-    public Task<Dictionary<string, Tensor<float>>> RunInferenceLongInputsAsync(Dictionary<string, Tensor<long>> inputs,
-        CancellationToken cancellationToken = default)
-    {
-        if (inputs == null || inputs.Count == 0)
-            throw new ArgumentException("Inputs cannot be null or empty", nameof(inputs));
-        var floatInputs = new Dictionary<string, Tensor<float>>();
-        foreach (var (k, v) in inputs)
-        {
-            var cast = new DenseTensor<float>(v.Dimensions.ToArray());
-            var arr = v.ToArray();
-            for (var i = 0; i < arr.Length; i++) cast.Buffer.Span[i] = arr[i];
-            floatInputs[k] = cast;
-        }
-
-        return RunInferenceAsync(floatInputs, cancellationToken);
-    }
-
-    public Dictionary<string, MLNodeMetadata> GetInputMetadata()
-    {
-        throw new NotSupportedException("TFLite metadata not exposed in Phase 1 implementation.");
-    }
-
-    public Dictionary<string, MLNodeMetadata> GetOutputMetadata()
-    {
-        throw new NotSupportedException("TFLite metadata not exposed in Phase 1 implementation.");
-    }
-
-    public void UnloadModel()
-    {
-        lock (_sync)
-        {
-            _interpreter?.Close();
-            _interpreter?.Dispose();
-            _interpreter = null;
-            _modelBytes = null;
-        }
-    }
-
-    private void Initialize(byte[] bytes)
-    {
-        lock (_sync)
-        {
-            UnloadModel();
-            _modelBytes = bytes;
-            var nativeOrder = ByteOrder.NativeOrder() ?? ByteOrder.BigEndian;
-            var byteBuffer = ByteBuffer.AllocateDirect(bytes.Length).Order(nativeOrder!);
-            byteBuffer.Put(bytes);
-            byteBuffer.Rewind();
-            _interpreter = new Interpreter(byteBuffer,
-                (Interpreter.Options?)new Interpreter.Options().SetNumThreads(Math.Max(1,
-                    Environment.ProcessorCount - 1)));
-            _interpreter.AllocateTensors();
-        }
-    }
+    /// <inheritdoc/>
+    public void UnloadModel() { /* nothing to unload */ }
 }
 #endif
