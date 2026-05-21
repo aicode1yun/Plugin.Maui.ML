@@ -1,90 +1,253 @@
 #if ANDROID
+using Java.Nio;
 using Microsoft.ML.OnnxRuntime.Tensors;
-using Plugin.Maui.ML;
+using System.Reflection;
+using Xamarin.TensorFlow.Lite;
+using Application = Android.App.Application;
+using Object = Java.Lang.Object;
 
 namespace Plugin.Maui.ML.Platforms.Android;
 
-/// <summary>
-///     MLKit inference backend (stub).
-/// </summary>
-/// <remarks>
-///     <para>
-///         The MLKit backend (TensorFlow Lite) is not included in the core Plugin.Maui.ML NuGet package
-///         to ensure Android 16 KB page-size compliance.
-///     </para>
-///     <para>
-///         The default Android inference path is <strong>ONNX Runtime with NNAPI acceleration</strong>,
-///         which is fully 16 KB page-size compliant and recommended for Android 16 (API 35+) apps.
-///     </para>
-///     <para>
-///         If you require TensorFlow Lite/MLKit inference, please:
-///         1. Keep using the legacy Xamarin.TensorFlow.Lite package directly, OR
-///         2. Migrate to LiteRT 1.4.0+ (Google's official TensorFlow Lite successor with 16 KB compliance)
-///     </para>
-///     <para>
-///         For migration guidance, see: <see href="https://ai.google.dev/edge/litert/migration"/>
-///     </para>
-/// </remarks>
-public sealed class MLKitInfer : IMLInfer
+public sealed class MLKitInfer : IMLInfer, IDisposable
 {
-    /// <inheritdoc/>
-    public MLBackend Backend => throw new NotSupportedException(GetErrorMessage());
+    private readonly Lock _sync = new();
+    private bool _disposed;
+    private Interpreter? _interpreter;
+    private byte[]? _modelBytes;
 
-    /// <inheritdoc/>
-    public bool IsModelLoaded => throw new NotSupportedException(GetErrorMessage());
+    public void Dispose()
+    {
+        if (_disposed) return;
+        UnloadModel();
+        _disposed = true;
+        GC.SuppressFinalize(this);
+    }
 
-    /// <inheritdoc/>
-    public void Dispose() => throw new NotSupportedException(GetErrorMessage());
+    public MLBackend Backend => MLBackend.MLKit;
+    public bool IsModelLoaded => _interpreter != null;
 
-    /// <inheritdoc/>
-    public Task LoadModelAsync(string modelPath, CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(GetErrorMessage());
+    public async Task LoadModelAsync(string modelPath, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(modelPath))
+            throw new ArgumentException("Model path cannot be null or empty", nameof(modelPath));
+        if (!File.Exists(modelPath))
+            throw new FileNotFoundException($"Model file not found: {modelPath}");
+        var bytes = await File.ReadAllBytesAsync(modelPath, cancellationToken).ConfigureAwait(false);
+        Initialize(bytes);
+    }
 
-    /// <inheritdoc/>
-    public Task LoadModelAsync(Stream modelStream, CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(GetErrorMessage());
+    public async Task LoadModelAsync(Stream modelStream, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(modelStream);
+        await using var ms = new MemoryStream();
+        await modelStream.CopyToAsync(ms, cancellationToken).ConfigureAwait(false);
+        Initialize(ms.ToArray());
+    }
 
-    /// <inheritdoc/>
-    public Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(GetErrorMessage());
+    public async Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(assetName))
+            throw new ArgumentException("Asset name cannot be null or empty", nameof(assetName));
+        try
+        {
+            await using var assetStream = Application.Context.Assets?.Open(assetName)
+                                          ?? throw new FileNotFoundException(
+                                              $"Asset '{assetName}' not found in Android assets.");
+            await LoadModelAsync(assetStream, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to load TFLite model asset '{assetName}': {ex.Message}", ex);
+        }
+    }
 
-    /// <inheritdoc/>
-    public Task<Dictionary<string, Tensor<float>>> RunInferenceAsync(
-        Dictionary<string, Tensor<float>> inputs,
-        CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(GetErrorMessage());
+    public Task<Dictionary<string, Tensor<float>>> RunInferenceAsync(Dictionary<string, Tensor<float>> inputs,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsModelLoaded) throw new InvalidOperationException("No TFLite model loaded. Call LoadModelAsync first.");
+        if (inputs == null || inputs.Count == 0)
+            throw new ArgumentException("Inputs cannot be null or empty", nameof(inputs));
 
-    /// <inheritdoc/>
-    public Task<Dictionary<string, Tensor<float>>> RunInferenceLongInputsAsync(
-        Dictionary<string, Tensor<long>> inputs,
-        CancellationToken cancellationToken = default) =>
-        throw new NotSupportedException(GetErrorMessage());
+        return Task.Run(() =>
+        {
+            lock (_sync)
+            {
+                if (_interpreter == null) throw new InvalidOperationException("Interpreter disposed.");
 
-    /// <inheritdoc/>
-    public Dictionary<string, MLNodeMetadata> GetInputMetadata() =>
-        throw new NotSupportedException(GetErrorMessage());
+                var first = inputs.First();
+                var inputTensor = first.Value;
+                var inputIndex = 0; // assume single input
 
-    /// <inheritdoc/>
-    public Dictionary<string, MLNodeMetadata> GetOutputMetadata() =>
-        throw new NotSupportedException(GetErrorMessage());
+                // Prepare input buffer
+                var flat = inputTensor.ToArray();
+                var inputShape = inputTensor.Dimensions.ToArray();
+                try
+                {
+                    _interpreter.ResizeInput(inputIndex, inputShape);
+                }
+                catch
+                {
+                    /* ignore if immutable */
+                }
 
-    /// <inheritdoc/>
-    public void UnloadModel() =>
-        throw new NotSupportedException(GetErrorMessage());
+                _interpreter.AllocateTensors();
 
-    private static string GetErrorMessage() =>
-        """
-        MLKit (TensorFlow Lite) backend is not included in Plugin.Maui.ML to ensure Android 16 KB 
-        page-size compliance (required for Android 16+).
-        
-        Recommended: Use the default ONNX Runtime backend with NNAPI acceleration via:
-            AddMauiML() or MLPlugin.Default
-        
-        Alternative: If you specifically need TFLite:
-          • Continue using Xamarin.TensorFlow.Lite directly, OR
-          • Migrate to LiteRT 1.4.0+ (Google's official successor)
-        
-        See: https://ai.google.dev/edge/litert/migration
-        """;
+                // Build multidimensional Java array (fallback approach) or supply direct buffer
+                // Simpler: use float[] and rely on internal mapping if shape is 1-D. For N-D we flatten.
+                var inputData = Object.FromArray(flat);
+
+                // Prepare output container (float[])
+                // Query output shape via tensor
+                var outputTensor = _interpreter.GetOutputTensor(0);
+                if (outputTensor != null)
+                {
+                    var oshape = outputTensor.Shape();
+                    var outCount = 1;
+                    if (oshape != null)
+                    {
+                        foreach (var d in oshape) outCount *= d;
+                        var outputArray = new float[outCount];
+
+                        // Run
+                        _interpreter.Run(inputData, outputArray);
+
+                        // Wrap into DenseTensor
+                        var dense = new DenseTensor<float>(oshape.Select(i => i).ToArray());
+                        var span = dense.Buffer.Span;
+                        for (var i = 0; i < outputArray.Length; i++) span[i] = outputArray[i];
+
+                        return new Dictionary<string, Tensor<float>> { ["output0"] = dense };
+                    }
+                }
+            }
+
+            throw new InvalidOperationException("Failed to run inference or retrieve output.");
+        }, cancellationToken);
+    }
+
+    public Task<Dictionary<string, Tensor<float>>> RunInferenceLongInputsAsync(Dictionary<string, Tensor<long>> inputs,
+        CancellationToken cancellationToken = default)
+    {
+        if (inputs == null || inputs.Count == 0)
+            throw new ArgumentException("Inputs cannot be null or empty", nameof(inputs));
+        var floatInputs = new Dictionary<string, Tensor<float>>();
+        foreach (var (k, v) in inputs)
+        {
+            var cast = new DenseTensor<float>(v.Dimensions.ToArray());
+            var arr = v.ToArray();
+            for (var i = 0; i < arr.Length; i++) cast.Buffer.Span[i] = arr[i];
+            floatInputs[k] = cast;
+        }
+
+        return RunInferenceAsync(floatInputs, cancellationToken);
+    }
+
+    public Dictionary<string, MLNodeMetadata> GetInputMetadata()
+    {
+        if (!IsModelLoaded) throw new InvalidOperationException("No TFLite model loaded. Call LoadModelAsync first.");
+
+        lock (_sync)
+        {
+            return _interpreter == null
+                ? throw new InvalidOperationException("Interpreter disposed.")
+                : GetTensorMetadata(_interpreter, isInput: true);
+        }
+    }
+
+    public Dictionary<string, MLNodeMetadata> GetOutputMetadata()
+    {
+        if (!IsModelLoaded) throw new InvalidOperationException("No TFLite model loaded. Call LoadModelAsync first.");
+
+        lock (_sync)
+        {
+            return _interpreter == null
+                ? throw new InvalidOperationException("Interpreter disposed.")
+                : GetTensorMetadata(_interpreter, isInput: false);
+        }
+    }
+
+    public void UnloadModel()
+    {
+        lock (_sync)
+        {
+            _interpreter?.Close();
+            _interpreter?.Dispose();
+            _interpreter = null;
+            _modelBytes = null;
+        }
+    }
+
+    private void Initialize(byte[] bytes)
+    {
+        lock (_sync)
+        {
+            UnloadModel();
+            _modelBytes = bytes;
+            var nativeOrder = ByteOrder.NativeOrder() ?? ByteOrder.BigEndian;
+            var byteBuffer = ByteBuffer.AllocateDirect(bytes.Length).Order(nativeOrder!);
+            byteBuffer.Put(bytes);
+            byteBuffer.Rewind();
+            _interpreter = new Interpreter(byteBuffer,
+                (Interpreter.Options?)new Interpreter.Options().SetNumThreads(Math.Max(1,
+                    Environment.ProcessorCount - 1)));
+            _interpreter.AllocateTensors();
+        }
+    }
+
+    private static Dictionary<string, MLNodeMetadata> GetTensorMetadata(Interpreter interpreter, bool isInput)
+    {
+        var count = GetTensorCount(interpreter, isInput);
+        var metadata = new Dictionary<string, MLNodeMetadata>(count);
+        var prefix = isInput ? "input" : "output";
+
+        for (var i = 0; i < count; i++)
+        {
+            var tensor = GetTensor(interpreter, isInput, i);
+            if (tensor == null) continue;
+            var name = GetTensorName(tensor) ?? $"{prefix}{i}";
+            metadata[name] = new MLNodeMetadata(GetElementType(tensor), GetTensorDimensions(tensor));
+        }
+
+        return metadata;
+    }
+
+    private static int GetTensorCount(Interpreter interpreter, bool isInput)
+    {
+        return isInput ? interpreter.InputTensorCount : interpreter.OutputTensorCount;
+    }
+
+    private static ITensor? GetTensor(Interpreter interpreter, bool isInput, int index)
+    {
+        return isInput ? interpreter.GetInputTensor(index) : interpreter.GetOutputTensor(index);
+    }
+
+    private static int[] GetTensorDimensions(ITensor tensor)
+    {
+        return tensor.Shape() ?? [];
+    }
+
+    private static string? GetTensorName(ITensor tensor)
+    {
+        ArgumentNullException.ThrowIfNull(tensor);
+
+        return tensor.Name();
+    }
+
+    private static Type GetElementType(ITensor tensor)
+    {
+        var dataTypeValue = tensor.DataType();
+
+        if (dataTypeValue == null)
+        {
+            return typeof(float);
+        }
+
+        return MapTensorElementType(dataTypeValue);
+    }
+
+    private static Type MapTensorElementType(DataType dataTypeValue)
+    {
+        return dataTypeValue.GetType();
+    }
 }
 #endif
