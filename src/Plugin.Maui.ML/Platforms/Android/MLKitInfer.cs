@@ -1,5 +1,6 @@
-#if ANDROID
+﻿#if ANDROID
 using Java.Nio;
+using Java.Nio.Channels;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using System.Reflection;
 using Xamarin.TensorFlow.Lite;
@@ -14,6 +15,7 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
     private bool _disposed;
     private Interpreter? _interpreter;
     private byte[]? _modelBytes;
+    private ByteBuffer? _modelBuffer;
 
     public void Dispose()
     {
@@ -44,21 +46,42 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
         Initialize(ms.ToArray());
     }
 
-    public async Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default)
+    public Task LoadModelFromAssetAsync(string assetName, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(assetName))
             throw new ArgumentException("Asset name cannot be null or empty", nameof(assetName));
-        try
+
+        return Task.Run(() =>
         {
-            await using var assetStream = Application.Context.Assets?.Open(assetName)
-                                          ?? throw new FileNotFoundException(
-                                              $"Asset '{assetName}' not found in Android assets.");
-            await LoadModelAsync(assetStream, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException($"Failed to load TFLite model asset '{assetName}': {ex.Message}", ex);
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var assets = Application.Context.Assets
+                             ?? throw new InvalidOperationException("Android AssetManager is unavailable.");
+
+                using var afd = assets.OpenFd(assetName)
+                                ?? throw new FileNotFoundException(
+                                    $"Asset '{assetName}' not found in Android assets.");
+
+                using var inputStream = new Java.IO.FileInputStream(afd.FileDescriptor);
+
+                var channel = inputStream.Channel
+                              ?? throw new InvalidOperationException("Could not get FileChannel for asset.");
+
+                var mappedBuffer = channel.Map(
+                    FileChannel.MapMode.ReadOnly!,
+                    afd.StartOffset,
+                    afd.DeclaredLength);
+
+                Initialize(mappedBuffer);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to load TFLite model asset '{assetName}': {ex.Message}", ex);
+            }
+        }, cancellationToken);
     }
 
     public Task<Dictionary<string, Tensor<float>>> RunInferenceAsync(Dictionary<string, Tensor<float>> inputs,
@@ -126,20 +149,71 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
     }
 
     public Task<Dictionary<string, Tensor<float>>> RunInferenceLongInputsAsync(Dictionary<string, Tensor<long>> inputs,
-        CancellationToken cancellationToken = default)
+    CancellationToken cancellationToken = default)
     {
+        if (!IsModelLoaded) throw new InvalidOperationException("No TFLite model loaded. Call LoadModelAsync first.");
         if (inputs == null || inputs.Count == 0)
             throw new ArgumentException("Inputs cannot be null or empty", nameof(inputs));
-        var floatInputs = new Dictionary<string, Tensor<float>>();
-        foreach (var (k, v) in inputs)
-        {
-            var cast = new DenseTensor<float>(v.Dimensions.ToArray());
-            var arr = v.ToArray();
-            for (var i = 0; i < arr.Length; i++) cast.Buffer.Span[i] = arr[i];
-            floatInputs[k] = cast;
-        }
 
-        return RunInferenceAsync(floatInputs, cancellationToken);
+        return Task.Run(() =>
+        {
+            lock (_sync)
+            {
+                if (_interpreter == null) throw new InvalidOperationException("Interpreter disposed.");
+
+                var first = inputs.First();
+                var inputTensor = first.Value;
+                var inputIndex = 0; // assume single input
+
+                var flat = inputTensor.ToArray();
+                var inputShape = inputTensor.Dimensions.ToArray();
+
+                try
+                {
+                    _interpreter.ResizeInput(inputIndex, inputShape);
+                }
+                catch
+                {
+                    /* ignore if immutable */
+                }
+
+                _interpreter.AllocateTensors();
+
+                var nativeOrder = ByteOrder.NativeOrder() ?? ByteOrder.BigEndian;
+
+                // INT64 input buffer
+                var inputData = ByteBuffer.AllocateDirect(flat.Length * 8).Order(nativeOrder!);
+                inputData.AsLongBuffer()!.Put(flat);
+                inputData.Rewind();
+
+                var outputTensor = _interpreter.GetOutputTensor(0);
+                if (outputTensor == null)
+                    throw new InvalidOperationException("Failed to retrieve output tensor.");
+
+                var oshape = outputTensor.Shape();
+                if (oshape == null)
+                    throw new InvalidOperationException("Failed to retrieve output shape.");
+
+                var outCount = 1;
+                foreach (var d in oshape) outCount *= d;
+
+                // FLOAT32 output buffer
+                var outputData = ByteBuffer.AllocateDirect(outCount * 4).Order(nativeOrder!);
+
+                _interpreter.Run(inputData, outputData);
+
+                outputData.Rewind();
+
+                var outputArray = new float[outCount];
+                outputData.AsFloatBuffer()!.Get(outputArray);
+
+                var dense = new DenseTensor<float>(oshape.Select(i => i).ToArray());
+                var span = dense.Buffer.Span;
+                for (var i = 0; i < outputArray.Length; i++) span[i] = outputArray[i];
+
+                return new Dictionary<string, Tensor<float>> { ["output0"] = dense };
+            }
+        }, cancellationToken);
     }
 
     public Dictionary<string, MLNodeMetadata> GetInputMetadata()
@@ -174,6 +248,7 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
             _interpreter?.Dispose();
             _interpreter = null;
             _modelBytes = null;
+            _modelBuffer = null;
         }
     }
 
@@ -190,6 +265,23 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
             _interpreter = new Interpreter(byteBuffer,
                 (Interpreter.Options?)new Interpreter.Options().SetNumThreads(Math.Max(1,
                     Environment.ProcessorCount - 1)));
+            _interpreter.AllocateTensors();
+        }
+    }
+    private void Initialize(ByteBuffer modelBuffer)
+    {
+        lock (_sync)
+        {
+            UnloadModel();
+
+            _modelBytes = null;
+            _modelBuffer = modelBuffer;
+
+            _interpreter = new Interpreter(
+                modelBuffer,
+                (Interpreter.Options?)new Interpreter.Options().SetNumThreads(
+                    Math.Max(1, Environment.ProcessorCount - 1)));
+
             _interpreter.AllocateTensors();
         }
     }
