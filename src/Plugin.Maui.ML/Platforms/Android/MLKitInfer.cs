@@ -15,7 +15,9 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
     private bool _disposed;
     private Interpreter? _interpreter;
     private byte[]? _modelBytes;
+#pragma warning disable CS0414 // Field is assigned intentionally to keep the mapped model buffer alive for the interpreter lifetime.
     private ByteBuffer? _modelBuffer;
+#pragma warning restore CS0414
 
     public void Dispose()
     {
