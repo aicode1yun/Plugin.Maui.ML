@@ -60,21 +60,34 @@ public sealed class MLKitInfer : IMLInfer, IDisposable
                 var assets = Application.Context.Assets
                              ?? throw new InvalidOperationException("Android AssetManager is unavailable.");
 
-                using var afd = assets.OpenFd(assetName)
-                                ?? throw new FileNotFoundException(
-                                    $"Asset '{assetName}' not found in Android assets.");
+                try
+                {
+                    using var afd = assets.OpenFd(assetName)
+                                    ?? throw new FileNotFoundException(
+                                        $"Asset '{assetName}' not found in Android assets.");
 
-                using var inputStream = new Java.IO.FileInputStream(afd.FileDescriptor);
+                    using var inputStream = new Java.IO.FileInputStream(afd.FileDescriptor);
 
-                var channel = inputStream.Channel
-                              ?? throw new InvalidOperationException("Could not get FileChannel for asset.");
+                    var channel = inputStream.Channel
+                                  ?? throw new InvalidOperationException("Could not get FileChannel for asset.");
 
-                var mappedBuffer = channel.Map(
-                    FileChannel.MapMode.ReadOnly!,
-                    afd.StartOffset,
-                    afd.DeclaredLength);
+                    var mappedBuffer = channel.Map(
+                        FileChannel.MapMode.ReadOnly!,
+                        afd.StartOffset,
+                        afd.DeclaredLength);
 
-                Initialize(mappedBuffer);
+                    Initialize(mappedBuffer);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    using var assetStream = assets.Open(assetName)
+                        ?? throw new FileNotFoundException($"Asset '{assetName}' not found in Android assets.", ex);
+                    using var ms = new System.IO.MemoryStream();
+                    assetStream.CopyTo(ms);
+                    Initialize(ms.ToArray());
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
